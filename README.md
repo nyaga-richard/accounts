@@ -7,6 +7,7 @@ A self-hosted accounting-system foundation built around a PostgreSQL transaction
 - Next.js 16 / React / TypeScript dashboard shell with responsive navigation.
 - Express + TypeScript REST API with Better Auth email/password sessions, session-backed role/permission checks, Knex configuration and Zod request validation.
 - PostgreSQL migration covering core master data, transaction configuration, transactions and postings, ledger views, opening balances, weekly close/reconciliation, cheques, bank imports/matches, audit and accounting period tables.
+- Supplier opening-balance import from previewed `.xlsx`/`.csv` files using `Name`, `Code`, and `Opening Balance` columns, with audited pending batches and explicit balanced GL counterpart lines.
 - Transaction creation derives a debit/credit pair from one explicit configured rule, runs inside a PostgreSQL transaction, allocates transaction numbers from a sequence under a posting lock, freezes applied balance multipliers, and snapshots operational balances.
 - Independent weekly operational formula helper/tests:
   - Current = bank + CHQ B − CHQ A

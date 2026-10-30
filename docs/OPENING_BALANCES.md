@@ -5,8 +5,10 @@
 1. Open **Opening balances** and create a batch with an effective date and clear description.
 2. Enter one or more chart-of-accounts lines. Each line contains either a positive debit or a positive credit, never both. Account debits and credits must balance exactly to four decimal places.
 3. Optionally add supplier, customer and cashier opening balances. These subledger figures are stored separately from the chart-of-accounts entries; Ledgerway does **not** infer a control account or automatically link them to a general-ledger balance.
-4. Submit the batch. It remains pending and does not affect approved opening-balance reports.
-5. An authorized user approves or rejects the pending batch. Approval updates the corresponding opening-balance rows atomically and is recorded in the batch audit and general audit log. Rejection requires a reason.
+4. For a supplier spreadsheet, choose **Import supplier spreadsheet**, download the CSV template or select an `.xlsx` or `.csv` file with `Name`, `Code`, and `Opening Balance` headers (the first worksheet is read from `.xlsx` files), preview it, then prepare the batch. Blank/dash values are treated as zero; positive signed values increase supplier payable balances and negative values represent debit/prepayments. New suppliers are created on preparation; exact code/name matches are reused. A code that exists with a different name or inactive status blocks the import.
+5. A spreadsheet import still requires explicit, balanced chart-of-accounts opening lines in the same batch. Import does not guess a control account, create a balancing journal, or approve the batch. File rows are limited to 5,000, upload size to 10 MiB, and amounts to `NUMERIC(19,4)` precision.
+6. Submit the batch. It remains pending and does not affect approved opening-balance reports.
+7. An authorized user approves or rejects the pending batch. Approval updates the corresponding opening-balance rows atomically and is recorded in the batch audit and general audit log. Rejection requires a reason.
 
 ## Financial and history controls
 
@@ -23,6 +25,8 @@
 - `GET /api/opening-balance-batches` — list batches.
 - `GET /api/opening-balance-batches/:id` — batch lines and audit history.
 - `POST /api/opening-balance-batches` — prepare a pending batch.
+- `POST /api/opening-balance-batches/import-preview` — multipart `file` preview for supplier `.xlsx`/`.csv` files; requires `opening_balances.prepare`.
+- `POST /api/opening-balance-batches/import` — multipart `file`, `effective_date`, `description`, and JSON `accounts`; atomically creates missing suppliers and prepares their subledger balances with the account lines. Requires both `opening_balances.prepare` and `suppliers.write` (or `*`).
 - `POST /api/opening-balance-batches/:id/approve` — approve a balanced batch.
 - `POST /api/opening-balance-batches/:id/reject` — reject with a reason.
 
