@@ -9,7 +9,7 @@ describe('supplier spreadsheet import API',()=>{
   let server:Server;let origin='';let userId=0;let debitId=0;let creditId=0;const tag=`SUPROUTE${Date.now()}`;
   beforeAll(async()=>{
     const app=express();
-    app.use('/api',(req,_res,next)=>{req.appUser={userId:userId||1,authUserId:'supplier-import-test',name:'Import Test',email:'import-test@example.invalid',permissions:new Set(['opening_balances.prepare','suppliers.write','opening_balances.read','opening_balances.approve'])};next()});
+    app.use('/api',(req,_res,next)=>{req.appUser={userId:userId||1,authUserId:'supplier-import-test',name:'Import Test',email:'import-test@example.invalid',permissions:new Set(['opening_balances.prepare','suppliers.write','transaction_types.write','opening_balances.read','opening_balances.approve'])};next()});
     app.use('/api',openingBalancesApi);
     app.use((error:any,_req:express.Request,res:express.Response,_next:express.NextFunction)=>res.status(Number(error.status)||500).json({error:error.expose?error.message:'Internal server error',...(error.details?{details:error.details}:{})}));
     server=app.listen(0,'127.0.0.1');await new Promise<void>((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject)});const address=server.address();if(!address||typeof address==='string')throw new Error('Could not bind test server');origin=`http://127.0.0.1:${address.port}`;
@@ -22,7 +22,7 @@ describe('supplier spreadsheet import API',()=>{
   });
   it.skipIf(!databaseAvailable)('prepares a pending batch and creates the supplier on multipart commit',async()=>{
     const form=fileForm();form.append('effective_date','2000-01-01');form.append('description',`${tag} supplier import`);form.append('accounts',JSON.stringify([{entity_id:debitId,debit_amount:'10',credit_amount:'0'},{entity_id:creditId,debit_amount:'0',credit_amount:'10'}]));
-    const response=await fetch(`${origin}/api/opening-balance-batches/import`,{method:'POST',body:form});expect(response.status).toBe(201);const body=await response.json();expect(body.batch.status).toBe('PENDING');expect(body.suppliers_created).toBe(1);expect(body.opening_balances_imported).toBe(1);
+    const response=await fetch(`${origin}/api/opening-balance-batches/import`,{method:'POST',body:form});expect(response.status).toBe(201);const body=await response.json();expect(body.batch.status).toBe('PENDING');expect(body.suppliers_created).toBe(1);expect(body.opening_balances_imported).toBe(1);expect(body.auto_accounts.some((account:any)=>account.account_no.startsWith('SUP-AP-CTRL'))).toBe(true);expect(body.auto_accounts.some((account:any)=>account.account_no.startsWith('OPENING-CLEARING'))).toBe(true);
     expect(await db('suppliers').where({supplier_code:`${tag}-SUP-1`}).first()).toBeTruthy();
   });
 });

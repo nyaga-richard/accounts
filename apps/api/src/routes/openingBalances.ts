@@ -36,6 +36,7 @@ openingBalancesApi.post('/opening-balance-batches/import-preview',requirePermiss
 openingBalancesApi.post('/opening-balance-batches/import',requirePermission('opening_balances.prepare'),supplierFileUpload,wrap(async(req,res)=>{
   if(!req.file)throw fail('Upload an .xlsx or .csv supplier file using field name "file"',400);
   if(!req.appUser?.permissions.has('*')&&!req.appUser?.permissions.has('suppliers.write'))throw fail('Permission denied: suppliers.write',403);
+  if(!req.appUser?.permissions.has('*')&&!req.appUser?.permissions.has('transaction_types.write'))throw fail('Permission denied: transaction_types.write',403);
   const parsed=await parseSupplierOpeningFile(req.file.buffer,req.file.originalname);
   if(parsed.errors.length)throw Object.assign(fail('Correct all file validation errors before importing',422),{details:parsed.errors});
   let accounts:unknown;try{accounts=JSON.parse(String(req.body.accounts||'[]'));}catch{throw fail('Account opening lines must be valid JSON',400);}

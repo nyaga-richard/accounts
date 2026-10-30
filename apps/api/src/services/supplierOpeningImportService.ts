@@ -79,7 +79,51 @@ export async function parseSupplierOpeningFile(buffer:Buffer,filename:string):Pr
   return {rows,errors,blank_rows,headers,total_rows:totalRows};
 }
 
-export async function createSupplierOpeningImportBatch(db:Knex,rows:SupplierOpeningImportRow[],input:{effective_date:string;description:string;accounts:OpeningLine[]},userId:number){
+type AutoAccountSpec={key:string;baseCode:string;name:string;account_type:'ASSET'|'LIABILITY'|'EQUITY';account_nature:'DEBIT'|'CREDIT'};
+const autoAccountSpecs:AutoAccountSpec[]=[
+  {key:'ap_control',baseCode:'SUP-AP-CTRL',name:'Suppliers Payable Control',account_type:'LIABILITY',account_nature:'CREDIT'},
+  {key:'supplier_advances',baseCode:'SUP-ADVANCES',name:'Supplier Advances and Prepayments',account_type:'ASSET',account_nature:'DEBIT'},
+  {key:'opening_clearing',baseCode:'OPENING-CLEARING',name:'Opening Balance Clearing',account_type:'EQUITY',account_nature:'CREDIT'},
+];
+function amountUnits(amount:string):bigint{
+  const m=/^(-?)(\d{1,15})(?:\.(\d{1,4}))?$/.exec(amount);if(!m)throw fail(`Invalid normalized supplier amount: ${amount}`);
+  const magnitude=BigInt(m[2])*10000n+BigInt((m[3]||'').padEnd(4,'0')||'0');return m[1]?-magnitude:magnitude;
+}
+function unitsAmount(units:bigint){const abs=units<0n?-units:units;return `${units<0n?'-':''}${abs/10000n}.${String(abs%10000n).padStart(4,'0')}`}
+async function ensureAutoAccount(trx:Knex.Transaction,spec:AutoAccountSpec,userId:number){
+  for(let suffix=1;suffix<=999;suffix++){
+    const code=suffix===1?spec.baseCode:`${spec.baseCode}-${String(suffix).padStart(2,'0')}`;
+    const existing=await trx('accounts').where({account_no:code}).first();
+    if(existing){if(existing.status==='ACTIVE'&&existing.account_type===spec.account_type&&existing.account_nature===spec.account_nature&&String(existing.currency||'KES').toUpperCase()==='KES')return {account:existing,created:false};continue;}
+    const [account]=await trx('accounts').insert({account_no:code,account_name:spec.name,account_type:spec.account_type,account_nature:spec.account_nature,currency:'KES',status:'ACTIVE'}).returning('*');
+    await trx('audit_logs').insert({user_id:userId,action:'SUPPLIER_IMPORT_ACCOUNT_CREATED',table_name:'accounts',record_id:String(account.account_id),new_values:account});
+    return {account,created:true};
+  }
+  throw fail(`Could not find or create a compatible ${spec.name} account`,409);
+}
+async function updateSupplierPostingRules(trx:Knex.Transaction,controlAccountId:number,userId:number){
+  const rules=await trx('transaction_type_rules as r').join('transaction_types as t','t.transaction_type_id','r.transaction_type_id')
+    .where('t.status','ACTIVE').where('t.affects_supplier',true).where('r.status','ACTIVE')
+    .select('r.*','t.code as transaction_type_code');
+  let updatedCount=0,unfixedCount=0;
+  for(const rule of rules){
+    if(rule.account_selection_mode!=='FIXED'||(rule.party_account_side!=='DEBIT'&&rule.party_account_side!=='CREDIT')){unfixedCount++;continue;}
+    const field=rule.party_account_side==='DEBIT'?'debit_account_id':'credit_account_id';
+    const current=rule[field];if(current===null||current===undefined){unfixedCount++;continue;}
+    if(Number(current)===controlAccountId)continue;
+    const opposite=rule.party_account_side==='DEBIT'?rule.credit_account_id:rule.debit_account_id;
+    if(opposite!==null&&opposite!==undefined&&Number(opposite)===controlAccountId)throw fail(`Supplier posting rule ${rule.transaction_type_code} would debit and credit the same control account; review its accounts before import`,409);
+    const oldValues=rule;
+    const [updated]=await trx('transaction_type_rules').where({rule_id:rule.rule_id}).update({[field]:controlAccountId}).returning('*');
+    const reason='Supplier opening import assigned the shared AP control account to the fixed supplier side';
+    await trx('transaction_type_rule_history').insert({transaction_type_id:rule.transaction_type_id,old_values:oldValues,new_values:updated,changed_by:userId,reason});
+    await trx('audit_logs').insert({user_id:userId,action:'SUPPLIER_CONTROL_ACCOUNT_ASSIGNED',table_name:'transaction_type_rules',record_id:String(rule.rule_id),old_values:oldValues,new_values:updated});
+    updatedCount++;
+  }
+  return {updated:updatedCount,unfixed:unfixedCount};
+}
+
+export async function createSupplierOpeningImportBatch(db:Knex,rows:SupplierOpeningImportRow[],input:{effective_date:string;description:string;accounts?:OpeningLine[]},userId:number){
   if(!rows.length)throw fail('No valid suppliers found in the uploaded file');
   return db.transaction(async trx=>{
     await trx.raw('SELECT pg_advisory_xact_lock(7224103902)');
@@ -101,7 +145,23 @@ export async function createSupplierOpeningImportBatch(db:Knex,rows:SupplierOpen
     const openingIds=openingRows.map(row=>Number(supplierByCode.get(row.supplier_code.trim().toLocaleLowerCase('en')).supplier_id));
     if(openingIds.length){const previous=await trx('supplier_opening_balances').whereIn('supplier_id',openingIds).whereIn('status',['PENDING','APPROVED']).select('supplier_id','status').first();if(previous)throw fail('One or more suppliers already have a pending or approved opening balance; resolve existing batches before importing',409);}
     const supplierLines:OpeningLine[]=openingRows.map(row=>({entity_id:Number(supplierByCode.get(row.supplier_code.trim().toLocaleLowerCase('en')).supplier_id),amount:row.amount}));
-    const batch=await createOpeningBalanceBatch(trx as unknown as Knex,{...input,accounts:input.accounts,suppliers:supplierLines,customers:[],cashiers:[]},userId);
-    return {batch,rows_imported:rows.length,suppliers_created:createdCount,suppliers_reused:rows.length-createdCount,opening_balances_imported:openingRows.length};
+    const units=rows.map(row=>amountUnits(row.amount));const positiveTotal=units.filter(v=>v>0n).reduce((sum,v)=>sum+v,0n),negativeTotal=units.filter(v=>v<0n).reduce((sum,v)=>sum-v,0n),net=positiveTotal-negativeTotal;
+    const allZero=positiveTotal===0n&&negativeTotal===0n;let batch:any=null,autoAccounts:{account_no:string;account_name:string;account_type:string;account_nature:string;account_id:number;created:boolean}[]=[];let rulesUpdated=0,rulesUnfixed=0;
+    if(!allZero){
+      const ap=await ensureAutoAccount(trx,autoAccountSpecs[0]!,userId);const clearing=await ensureAutoAccount(trx,autoAccountSpecs[2]!,userId);let advances:{account:any;created:boolean}|null=null;
+      if(negativeTotal>0n)advances=await ensureAutoAccount(trx,autoAccountSpecs[1]!,userId);
+      const rules=await updateSupplierPostingRules(trx,Number(ap.account.account_id),userId);rulesUpdated=rules.updated;rulesUnfixed=rules.unfixed;
+      const accountLines:OpeningLine[]=[];
+      if(positiveTotal>0n)accountLines.push({entity_id:Number(ap.account.account_id),debit_amount:'0',credit_amount:unitsAmount(positiveTotal)});
+      if(negativeTotal>0n&&advances)accountLines.push({entity_id:Number(advances.account.account_id),debit_amount:unitsAmount(negativeTotal),credit_amount:'0'});
+      if(net>0n)accountLines.push({entity_id:Number(clearing.account.account_id),debit_amount:unitsAmount(net),credit_amount:'0'});
+      else if(net<0n)accountLines.push({entity_id:Number(clearing.account.account_id),debit_amount:'0',credit_amount:unitsAmount(-net)});
+      accountLines.push(...(input.accounts||[]));
+      autoAccounts=[ap, ...(advances?[advances]:[]), clearing].map(item=>({account_id:Number(item.account.account_id),account_no:String(item.account.account_no),account_name:String(item.account.account_name),account_type:String(item.account.account_type),account_nature:String(item.account.account_nature),created:item.created}));
+      batch=await createOpeningBalanceBatch(trx as unknown as Knex,{...input,accounts:accountLines,suppliers:supplierLines,customers:[],cashiers:[]},userId);
+    }else if((input.accounts||[]).length){
+      batch=await createOpeningBalanceBatch(trx as unknown as Knex,{...input,accounts:input.accounts||[],suppliers:[],customers:[],cashiers:[]},userId);
+    }
+    return {batch,rows_imported:rows.length,suppliers_created:createdCount,suppliers_reused:rows.length-createdCount,opening_balances_imported:openingRows.length,auto_accounts:autoAccounts,posting_rules_updated:rulesUpdated,posting_rules_unfixed:rulesUnfixed,positive_supplier_total:unitsAmount(positiveTotal),negative_supplier_total:unitsAmount(-negativeTotal),clearing_net:unitsAmount(net)};
   });
 }
