@@ -6,10 +6,10 @@ cd "$ROOT_DIR"
 if [[ ! -s .env ]]; then echo "Missing .env. Run sudo ./deploy/install-ubuntu.sh first." >&2; exit 1; fi
 if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then echo "Docker Engine and Compose plugin are required." >&2; exit 1; fi
 
-GIT_USER=${SUDO_USER:-$(stat -c '%U' "$ROOT_DIR")}
-run_git() {
-  if [[ $EUID -eq 0 && -n $GIT_USER && $GIT_USER != root ]]; then sudo -u "$GIT_USER" git -C "$ROOT_DIR" "$@"; else git -C "$ROOT_DIR" "$@"; fi
-}
+# This updater runs as root (sudo) for Docker. Use an explicit per-command
+# safe.directory override so a prior `sudo git pull`/root-owned checkout does
+# not make Git reject the repository as dubious.
+run_git() { git -c safe.directory="$ROOT_DIR" -C "$ROOT_DIR" "$@"; }
 if ! run_git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "Updates require a Git checkout with an upstream branch. Clone the reviewed Ledgerway repository, then run this script from that checkout." >&2
   exit 1
