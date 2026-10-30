@@ -22,7 +22,7 @@ Both scripts refuse unsafe conditions rather than guessing. The update script re
 
    Follow the prompts. The public URL must be an HTTPS origin without a path or port, such as `https://accounts.example.com`. The initial admin password must be at least 12 characters. It is passed to the one-time seed process and is not written to `.env`.
 
-The installer writes a private, mode-`0600` `.env` containing generated credentials and the tunnel token. `.env` is ignored by Git. **Never share or commit it.** Database, API and web ports are only bound to loopback on the host; PostgreSQL has no published port. Public access is through the Cloudflare Tunnel connector, which dials outbound from the server, so no inbound application port-forwarding is needed.
+The installer writes a private, mode-`0600` `.env` containing generated credentials and the tunnel token. `.env` is ignored by Git. **Never share or commit it.** Database, API, and web ports are not published on the host. The Cloudflare connector reaches the web service over the private Compose network; it routes API requests internally through the web proxy. Public access is through the outbound Tunnel connector, so no inbound application port-forwarding is needed. This also avoids host-port collisions and keeps the origin services off the host network.
 
 ## One-command updates
 
