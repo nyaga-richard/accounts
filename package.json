@@ -1,0 +1,8 @@
+{
+  "name": "ledgerway-accounting",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["apps/api", "apps/web"],
+  "scripts": {"dev": "concurrently -k -n api,web -c blue,green \"npm run dev -w @ledgerway/api\" \"npm run dev -w @ledgerway/web\"", "test": "npm run test -w @ledgerway/api", "build": "npm run build -w @ledgerway/api && npm run build -w @ledgerway/web", "migrate": "npm run migrate -w @ledgerway/api", "seed": "npm run seed -w @ledgerway/api"},
+  "devDependencies": {"concurrently": "^9.1.2", "typescript": "^5.7.3"}
+}

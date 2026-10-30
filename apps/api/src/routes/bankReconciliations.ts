@@ -1,0 +1,14 @@
+import { Router, type Request, type RequestHandler, type Response } from 'express';
+import { z } from 'zod';
+import { db } from '../db.js';
+import { requirePermission } from '../middleware/authz.js';
+import { approveBankReconciliation, confirmBankMatch, getBankMatchCandidates, getBankReconciliationDetail, listBankReconciliations, prepareBankReconciliation } from '../services/bankReconciliationService.js';
+export const bankReconciliationsApi=Router();
+const wrap=(handler:(req:Request,res:Response)=>Promise<unknown>):RequestHandler=>(req,res,next)=>{void handler(req,res).catch(next)};
+const idSchema=z.coerce.number().int().positive();
+bankReconciliationsApi.get('/bank-reconciliations',requirePermission('reconciliation.read'),wrap(async(_req,res)=>res.json(await listBankReconciliations(db))));
+bankReconciliationsApi.post('/bank-reconciliations/prepare',requirePermission('reconciliation.prepare'),wrap(async(req,res)=>{const body=z.object({statement_id:idSchema}).parse(req.body);res.status(201).json(await prepareBankReconciliation(db,body.statement_id,req.appUser!.userId))}));
+bankReconciliationsApi.get('/bank-reconciliations/:id',requirePermission('reconciliation.read'),wrap(async(req,res)=>res.json(await getBankReconciliationDetail(db,idSchema.parse(req.params.id)))));
+bankReconciliationsApi.get('/bank-reconciliations/:id/entries/:entryId/candidates',requirePermission('reconciliation.read'),wrap(async(req,res)=>{const q=z.string().max(160).optional().parse(req.query.q);res.json(await getBankMatchCandidates(db,idSchema.parse(req.params.id),idSchema.parse(req.params.entryId),q||''))}));
+bankReconciliationsApi.post('/bank-reconciliations/:id/matches',requirePermission('reconciliation.prepare'),wrap(async(req,res)=>{const body=z.object({entry_id:idSchema,allocations:z.array(z.object({posting_id:idSchema,allocated_amount:z.string().min(1).max(30)})).min(1).max(100),remarks:z.string().max(1000).optional()}).parse(req.body);res.status(201).json(await confirmBankMatch(db,idSchema.parse(req.params.id),body.entry_id,body.allocations,body.remarks,req.appUser!.userId))}));
+bankReconciliationsApi.post('/bank-reconciliations/:id/approve',requirePermission('reconciliation.approve'),wrap(async(req,res)=>res.json(await approveBankReconciliation(db,idSchema.parse(req.params.id),req.appUser!.userId))));

@@ -1,0 +1,9 @@
+import {describe,it,expect} from 'vitest';
+import ExcelJS from 'exceljs';
+import {parseBankWorkbook} from '../src/services/bankImportService.js';
+async function workbookWith(rows:unknown[][]){const wb=new ExcelJS.Workbook();const ws=wb.addWorksheet('Statement');ws.addRow(['Posting Date','Value Date','Remarks','Debit','Credit','Running Balance','Ref Number']);for(const r of rows)ws.addRow(r);return Buffer.from(await wb.xlsx.writeBuffer());}
+describe('bank statement workbook parsing',()=>{
+ it('preserves the seven-column statement data, original remarks, reference text and duplicate references',async()=>{const buf=await workbookWith([[new Date('2026-10-01T00:00:00Z'),new Date('2026-10-01T00:00:00Z'),'Cheque No: 0007 BATCH 08',250,0,750,'000001'],[new Date('2026-10-02T00:00:00Z'),new Date('2026-10-02T00:00:00Z'),'Mary / inward cheque',0,250,1000,'000001']]);const parsed=await parseBankWorkbook(buf);expect(parsed.errors).toEqual([]);expect(parsed.rows).toHaveLength(2);expect(parsed.rows[0]?.original_remarks).toBe('Cheque No: 0007 BATCH 08');expect(parsed.rows[0]?.bank_reference_number).toBe('000001');expect(parsed.rows[0]?.debit).toBe('250.0000');expect(parsed.rows[1]?.credit).toBe('250.0000');expect(parsed.file_hash).toHaveLength(64);});
+ it('reports invalid rows instead of silently dropping them',async()=>{const buf=await workbookWith([['not-a-date','not-a-date','bad row','-12','0','abc','ref']]);const parsed=await parseBankWorkbook(buf);expect(parsed.rows).toHaveLength(1);expect(parsed.errors.length).toBeGreaterThanOrEqual(4);expect(parsed.errors.some(e=>e.field==='Posting Date')).toBe(true);expect(parsed.errors.some(e=>e.field==='Debit')).toBe(true);});
+ it('reports blank worksheet row numbers',async()=>{const buf=await workbookWith([[new Date('2026-10-01T00:00:00Z'),null,'Deposit',0,10,10,'REF'],[null,null,null,null,null,null,null]]);const parsed=await parseBankWorkbook(buf);expect(parsed.blank_rows).toContain(3);});
+});
